@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive AI Particle Core - 3D Simulation</title>
+    <style>
+        /* CSS: Tampilan UI & Layout */
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        canvas { display: block; }
+        
+        #ui-layer {
+            position: absolute; top: 30px; left: 30px; color: white;
+            pointer-events: none; z-index: 10;
+        }
+        
+        h1 { margin: 0; font-size: 24px; letter-spacing: 2px; color: #00ffcc; text-transform: uppercase; }
+        #gesture-status { font-size: 32px; font-weight: 800; margin: 10px 0; text-shadow: 0 0 15px rgba(0,255,204,0.6); }
+        .controls { font-size: 14px; color: #888; background: rgba(0,0,0,0.4); padding: 10px; border-radius: 8px; border-left: 3px solid #00ffcc; }
+
+        #cam-container {
+            position: absolute; bottom: 30px; right: 30px;
+            width: 200px; height: 150px; border: 2px solid #333;
+            border-radius: 12px; overflow: hidden; transform: scaleX(-1);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 10;
+        }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        
+        #instructions {
+            position: absolute; bottom: 30px; left: 30px; color: #555; font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <h1>Interactive AI Particle Core</h1>
+        <div id="gesture-status">MENGINISIALISASI AI...</div>
+        <div class="controls">
+            ✋ <b>Open:</b> Chaos | ✊ <b>Fist:</b> Absurd Clump<br>
+            ✌️ <b>Victory:</b> Heart | 👍 <b>Thumb:</b> Sphere<br>
+            🤟 <b>Rock:</b> I LOVE YOU
+        </div>
+    </div>
+
+    <div id="instructions">Klik layar untuk mengaktifkan Audio</div>
+
+    <div id="cam-container">
+        <video id="input_video"></video>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { FontLoader } from 'three/addons/loaders/FontLoader.js';
+        import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
+
+        // --- 1. AUDIO ENGINE SETUP ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        let oscillator = null;
+        let gainNode = null;
+
+        function playGestureSound(gesture) {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            if (oscillator) { oscillator.stop(); oscillator.disconnect(); }
+
+            oscillator = audioCtx.createOscillator();
+            gainNode = audioCtx.createGain();
+
+            const sounds = {
+                'HEART': { freq: 440, type: 'sine' },
+                'SPHERE': { freq: 330, type: 'triangle' },
+                'ROCK': { freq: 554, type: 'sawtooth' },
+                'FIST': { freq: 110, type: 'sine' },
+                'OPEN': { freq: 880, type: 'square' }
+            };
+
+            const s = sounds[gesture] || { freq: 220, type: 'sine' };
+            oscillator.type = s.type;
+            oscillator.frequency.setValueAtTime(s.freq, audioCtx.currentTime);
+
+            gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+            gainNode.gain.linearRampToValueAtTime(0.1, audioCtx.currentTime + 0.1);
+            gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 1.2);
+
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            oscillator.start();
+            oscillator.stop(audioCtx.currentTime + 1.2);
+        }
+
+        // --- 2. THREE.JS SCENE SETUP ---
+        const particleCount = 25000;
+        let currentGesture = 'IDLE';
+        let lastGesture = 'IDLE';
+        const handPos = new THREE.Vector3(0, 0, 0);
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+        camera.position.z = 6;
+
+        // Partikel
+        const geo = new THREE.BufferGeometry();
+        const posArray = new Float32Array(particleCount * 3);
+        const colorArray = new Float32Array(particleCount * 3);
+        const colorObj = new THREE.Color();
+
+        for (let i = 0; i < particleCount; i++) {
+            posArray[i*3] = (Math.random() - 0.5) * 15;
+            posArray[i*3+1] = (Math.random() - 0.5) * 15;
+            posArray[i*3+2] = (Math.random() - 0.5) * 10;
+            colorObj.setHSL(i / particleCount, 0.8, 0.5);
+            colorArray[i*3] = colorObj.r;
+            colorArray[i*3+1] = colorObj.g;
+            colorArray[i*3+2] = colorObj.b;
+        }
+        geo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+        geo.setAttribute('color', new THREE.BufferAttribute(colorArray, 3));
+
+        const mat = new THREE.PointsMaterial({ size: 0.04, vertexColors: true, blending: THREE.AdditiveBlending, transparent: true });
+        const particles = new THREE.Points(geo, mat);
+        scene.add(particles);
+
+        // --- 3. SHAPES GENERATION ---
+        const heartTargets = new Float32Array(particleCount * 3);
+        const sphereTargets = new Float32Array(particleCount * 3);
+        let textTargets = null;
+
+        // Heart
+        for(let i=0; i<particleCount; i++) {
+            const t = Math.random() * Math.PI * 2;
+            heartTargets[i*3] = (16 * Math.pow(Math.sin(t), 3)) / 8;
+            heartTargets[i*3+1] = (13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t)) / 8;
+        }
+
+        // Sphere
+        for(let i=0; i<particleCount; i++) {
+            const phi = Math.acos(-1 + (2 * i) / particleCount);
+            const theta = Math.sqrt(particleCount * Math.PI) * phi;
+            sphereTargets[i*3] = 3 * Math.cos(theta) * Math.sin(phi);
+            sphereTargets[i*3+1] = 3 * Math.sin(theta) * Math.sin(phi);
+            sphereTargets[i*3+2] = 3 * Math.cos(phi);
+        }
+
+        // Font
+        const loader = new FontLoader();
+        loader.load('https://threejs.org/examples/fonts/helvetiker_bold.typeface.json', (font) => {
+            const textGeo = new TextGeometry('I LOVE YOU', { font: font, size: 0.6, height: 0.1 });
+            textGeo.center();
+            const pts = textGeo.attributes.position.array;
+            textTargets = new Float32Array(particleCount * 3);
+            for(let i=0; i<particleCount; i++) {
+                const pIdx = (i % (pts.length/3)) * 3;
+                textTargets[i*3] = pts[pIdx];
+                textTargets[i*3+1] = pts[pIdx+1];
+                textTargets[i*3+2] = pts[pIdx+2];
+            }
+        });
+
+        // --- 4. MEDIAPIPE AI LOGIC ---
+        const videoElement = document.getElementById('input_video');
+        const statusElement = document.getElementById('gesture-status');
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5 });
+        hands.onResults((res) => {
+            if (res.multiHandLandmarks && res.multiHandLandmarks[0]) {
+                const lm = res.multiHandLandmarks[0];
+                handPos.x = (0.5 - lm[9].x) * 12;
+                handPos.y = (0.5 - lm[9].y) * 8;
+
+                const isIndex = lm[8].y < lm[6].y;
+                const isMiddle = lm[12].y < lm[10].y;
+                const isPinky = lm[20].y < lm[18].y;
+                const isThumb = lm[4].y < lm[3].y;
+
+                let tempGesture = 'IDLE';
+                if (isIndex && isPinky && isThumb && !isMiddle) tempGesture = 'ROCK';
+                else if (isIndex && isMiddle && !isPinky) tempGesture = 'HEART';
+                else if (isThumb && !isIndex) tempGesture = 'SPHERE';
+                else if (!isIndex && !isMiddle) tempGesture = 'FIST';
+                else if (isIndex && isMiddle) tempGesture = 'OPEN';
+
+                currentGesture = tempGesture;
+                statusElement.innerText = currentGesture === 'IDLE' ? 'MENUNGGU TANGAN...' : currentGesture;
+
+                if (currentGesture !== lastGesture && currentGesture !== 'IDLE') {
+                    playGestureSound(currentGesture);
+                    lastGesture = currentGesture;
+                }
+            }
+        });
+
+        const cam = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 640, height: 480
+        });
+        cam.start();
+
+        // --- 5. MAIN ANIMATION LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+            const positions = particles.geometry.attributes.position.array;
+
+            for (let i = 0; i < particleCount; i++) {
+                let tx, ty, tz = 0;
+
+                if (currentGesture === 'HEART') {
+                    const pulse = 1 + Math.sin(Date.now() * 0.01) * 0.1;
+                    tx = heartTargets[i*3] * pulse + handPos.x;
+                    ty = heartTargets[i*3+1] * pulse + handPos.y;
+                } else if (currentGesture === 'SPHERE') {
+                    tx = sphereTargets[i*3] + handPos.x;
+                    ty = sphereTargets[i*3+1] + handPos.y;
+                    tz = sphereTargets[i*3+2];
+                } else if (currentGesture === 'ROCK' && textTargets) {
+                    tx = textTargets[i*3] + handPos.x;
+                    ty = textTargets[i*3+1] + handPos.y;
+                    tz = textTargets[i*3+2];
+                } else if (currentGesture === 'FIST') {
+                    tx = handPos.x + (Math.random() - 0.5) * 1.2;
+                    ty = handPos.y + (Math.random() - 0.5) * 1.2;
+                } else if (currentGesture === 'OPEN') {
+                    tx = (Math.random() - 0.5) * 20;
+                    ty = (Math.random() - 0.5) * 20;
+                } else {
+                    tx = positions[i*3] + Math.sin(Date.now() * 0.001 + i) * 0.005;
+                    ty = positions[i*3+1] + Math.cos(Date.now() * 0.001 + i) * 0.005;
+                }
+
+                positions[i*3] += (tx - positions[i*3]) * 0.08;
+                positions[i*3+1] += (ty - positions[i*3+1]) * 0.08;
+                positions[i*3+2] += (tz - positions[i*3+2]) * 0.08;
+            }
+
+            particles.geometry.attributes.position.needsUpdate = true;
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('click', () => { if (audioCtx.state === 'suspended') audioCtx.resume(); });
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
